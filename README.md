@@ -1,2 +1,1 @@
-# biomart_backend
-Ensembl's biomart backend | GSoC '22
+# Ensembl's data lakehouse backend | GSoC '22
