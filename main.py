@@ -15,12 +15,12 @@ AWS_DATA_CATALOG = "AwsDataCatalog"
 AWS_SCHEMA_DATABASE_NAME = "ensembl-parquet-meta-schema"
 AWS_S3_OUTPUT_DIR = "s3://ensembl-athena-results/"
 
-@app.get("/api/v1")
+@app.get("/")
 def root():
     return "Ensembl's data lakehouse backend"
 
 
-@app.get("/api/v1/data")
+@app.get("/data")
 async def read_all_filters():
     query_response = athena_client.list_table_metadata(CatalogName=AWS_DATA_CATALOG, DatabaseName=AWS_SCHEMA_DATABASE_NAME)["TableMetadataList"]
     # remove unnecessary data from AWS response
@@ -32,7 +32,7 @@ async def read_all_filters():
     return query_response
 
 
-@app.get("/api/v1/{data}/columns")
+@app.get("/{data_type}/columns")
 async def read_filters(data: str):
     conn = connect(s3_staging_dir=AWS_S3_OUTPUT_DIR, schema_name=AWS_SCHEMA_DATABASE_NAME)
     species = pd.read_sql_query(f"SELECT DISTINCT species from {data}", conn)["species"].tolist()
@@ -40,7 +40,7 @@ async def read_filters(data: str):
             'species': species}
 
 
-@app.get("/api/v1/query/{queryId}/status")
+@app.get("/query/{queryId}/status")
 async def query_status(queryId: str):
     try:
         query_response = athena_client.get_query_results(
@@ -58,7 +58,7 @@ async def query_status(queryId: str):
         return {'status': "Encountered an error, try again!"}
 
 
-@app.get("/api/v1/query/{data}/{species}")
+@app.get("/query/{data_type}/{species}")
 async def query_data(data: str , species: str, q: Union[str, None] = None):
     cache_key = base64.b64encode(bytes(data + species + q, 'utf-8'))
     if(r.exists(cache_key)):
