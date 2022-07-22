@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pyathena import connect
 from typing import Union
 import pandas as pd
@@ -33,11 +34,17 @@ async def read_all_filters():
 
 
 @app.get("/{data_type}/columns")
-async def read_filters(data: str):
-    conn = connect(s3_staging_dir=AWS_S3_OUTPUT_DIR, schema_name=AWS_SCHEMA_DATABASE_NAME)
-    species = pd.read_sql_query(f"SELECT DISTINCT species from {data}", conn)["species"].tolist()
-    return {'columns': athena_client.get_table_metadata(CatalogName=AWS_DATA_CATALOG, DatabaseName=AWS_SCHEMA_DATABASE_NAME, TableName=data)["TableMetadata"]["Columns"],
-            'species': species}
+async def read_filters(data_type: str):
+    try:
+        conn = connect(s3_staging_dir=AWS_S3_OUTPUT_DIR, schema_name=AWS_SCHEMA_DATABASE_NAME)
+        species = pd.read_sql_query(f"SELECT DISTINCT species from {data_type}", conn)["species"].tolist()
+        return {'columns': athena_client.get_table_metadata(CatalogName=AWS_DATA_CATALOG, DatabaseName=AWS_SCHEMA_DATABASE_NAME, TableName=data_type)["TableMetadata"]["Columns"],
+                'species': species}
+    except Exception as err:
+        print(err)
+        if "does not exist" in str(err):
+            raise HTTPException(status_code=404, detail="Data type not found!")
+        raise HTTPException(status_code=500, detail=str(err))
 
 
 @app.get("/query/{queryId}/status")
@@ -52,21 +59,28 @@ async def query_status(queryId: str):
         result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryId}.csv'}, ExpiresIn=3600)
         return {'status': 'DONE', 'result': result_file_temp_presigned_url, 'preview': query_response['ResultSet']}
     except Exception as err:
+        print(err)
         if "not yet finished" in str(err):
             return {'status': "IN PROGRESS"}
-        print(err)
-        return {'status': "Encountered an error, try again!"}
+        elif "was not found" in str(err):
+            raise HTTPException(status_code=404, detail="Invalid queryID / queryID does not exist!")
+        elif "Query did not finish successfully. Final query state: FAILED" in str(err):
+            return JSONResponse(
+                status_code=400,
+                content={"status": "FAILED", "detail": "Query was invalid, it could not be processed."},
+            )
+        raise HTTPException(status_code=500, detail=str(err))
 
 
 @app.get("/query/{data_type}/{species}")
-async def query_data(data: str , species: str, q: Union[str, None] = None):
-    cache_key = base64.b64encode(bytes(data + species + q, 'utf-8'))
+async def query_data(data_type: str , species: str, q: Union[str, None] = None):
+    cache_key = base64.b64encode(bytes(data_type + species + q, 'utf-8')) if q else base64.b64encode(bytes(data_type + species, 'utf-8'))
     if(r.exists(cache_key)):
         query_id = r.get(cache_key)
     else:
         filters = "AND " + q.replace("&", " AND ") if q else ""
         query_id = athena_client.start_query_execution(
-            QueryString=f"SELECT * FROM {data} WHERE species='{species}' {filters}",
+            QueryString=f"SELECT * FROM {data_type} WHERE species='{species}' {filters}",
             QueryExecutionContext={"Database": AWS_SCHEMA_DATABASE_NAME},
             ResultConfiguration={
                 "OutputLocation": AWS_S3_OUTPUT_DIR,
