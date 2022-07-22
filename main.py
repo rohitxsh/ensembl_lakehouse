@@ -33,7 +33,18 @@ async def read_all_filters():
     return query_response
 
 
-@app.get("/{data_type}/columns")
+@app.get(
+    "/{data_type}/columns",
+    responses={
+        404: {
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Data type not found!"}
+                }
+            },
+        },
+    },
+)
 async def read_filters(data_type: str):
     try:
         conn = connect(s3_staging_dir=AWS_S3_OUTPUT_DIR, schema_name=AWS_SCHEMA_DATABASE_NAME)
@@ -41,13 +52,30 @@ async def read_filters(data_type: str):
         return {'columns': athena_client.get_table_metadata(CatalogName=AWS_DATA_CATALOG, DatabaseName=AWS_SCHEMA_DATABASE_NAME, TableName=data_type)["TableMetadata"]["Columns"],
                 'species': species}
     except Exception as err:
-        print(err)
         if "does not exist" in str(err):
             raise HTTPException(status_code=404, detail="Data type not found!")
         raise HTTPException(status_code=500, detail=str(err))
 
 
-@app.get("/query/{queryId}/status")
+@app.get(
+    "/query/{queryId}/status",
+    responses={
+        400: {
+            "content": {
+                "application/json": {
+                    "example": {"status": "FAILED", "detail": "Query was invalid, it could not be processed."}
+                }
+            },
+        },
+        404: {
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invalid queryID / queryID does not exist!"}
+                }
+            },
+        },
+    },
+)
 async def query_status(queryId: str):
     try:
         query_response = athena_client.get_query_results(
@@ -59,7 +87,6 @@ async def query_status(queryId: str):
         result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryId}.csv'}, ExpiresIn=3600)
         return {'status': 'DONE', 'result': result_file_temp_presigned_url, 'preview': query_response['ResultSet']}
     except Exception as err:
-        print(err)
         if "not yet finished" in str(err):
             return {'status': "IN PROGRESS"}
         elif "was not found" in str(err):
@@ -72,7 +99,7 @@ async def query_status(queryId: str):
         raise HTTPException(status_code=500, detail=str(err))
 
 
-@app.get("/query/{data_type}/{species}")
+@app.get("/query/{data_type}/{species}",)
 async def query_data(data_type: str , species: str, q: Union[str, None] = None):
     cache_key = base64.b64encode(bytes(data_type + species + q, 'utf-8')) if q else base64.b64encode(bytes(data_type + species, 'utf-8'))
     if(r.exists(cache_key)):
