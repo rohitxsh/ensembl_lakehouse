@@ -1,6 +1,6 @@
 from contextlib import suppress
 from xmlrpc.client import boolean
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response, Query
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pyathena import connect
@@ -356,7 +356,14 @@ async def query_result_preview(queryID: str, request: Request):
         }
     }
 )
-async def request_query(data_type: str, species: str, request: Request, fields: Optional[str] = '*', condition: Optional[str] = None):
+async def request_query(data_type: str, species: str, request: Request, fields: Optional[str] = Query(
+        default="*",
+        description="Comma seperated fields ex.: gene_id,gene_stable_id",
+    ), condition: Optional[str] = Query(
+        default=None,
+        description="Condition to filter the data on, similar to SQL WHERE clause ex.: gene_id=554 AND gene_stable_id='eNSG00000210049'",
+    )
+):
     data_type = data_type.strip()
     species = species.strip()
     if ((not data_type) or (not species)): raise HTTPException(status_code=400, detail="Invalid data_type/species!")
