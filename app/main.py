@@ -1,4 +1,5 @@
 from contextlib import suppress
+from xmlrpc.client import boolean
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -53,6 +54,10 @@ async def log_requests(request: Request, call_next) -> Response:
 def log_error(err: str, request: Request) -> None:
     if (request.query_params): logger.error(f"{request.state.id} {request.url.path}?{request.query_params} err=\"{err}\"")
     else: logger.error(f"{request.state.id} {request.method} {request.url.path} err=\"{err}\"")
+
+def log_cache(bool: boolean, request: Request, key: str = None) -> None:
+    if (request.query_params): logger.info(f"{request.state.id} {request.url.path}?{request.query_params} cache={bool} key={key}" if key else f"{request.state.id} {request.url.path}?{request.query_params} cache={bool}")
+    else:logger.info(f"{request.state.id} {request.method} {request.url.path} cache={bool} key={key}" if key else f"{request.state.id} {request.method} {request.url.path} cache={bool}")
 
 # customise OpenAPI schema doc
 def custom_openapi():
@@ -121,6 +126,7 @@ async def read_all_filters(request: Request):
     try:
         if(r.exists('data')):
             query_response = json.loads(r.get('data').decode('ascii'))
+            log_cache(True, request, 'data')
         else:
             query_response = athena_client.list_table_metadata(
                 CatalogName=AWS_DATA_CATALOG, DatabaseName=AWS_SCHEMA_DATABASE_NAME)["TableMetadataList"]
@@ -131,6 +137,7 @@ async def read_all_filters(request: Request):
                 del table["TableType"]
                 del table["Parameters"]
             r.set('data', json.dumps(query_response))
+            log_cache(False, request)
         return query_response
     except Exception as err:
         log_error(str(err), request)
@@ -182,17 +189,21 @@ async def read_filters(data_type: str, request: Request):
         species_cache_key = f'{data_type}_species'
         if r.exists(species_cache_key):
             species = json.loads(r.get(species_cache_key).decode('ascii'))
+            log_cache(True, request, species_cache_key)
         else:
             conn = connect(s3_staging_dir=AWS_S3_OUTPUT_DIR, schema_name=AWS_SCHEMA_DATABASE_NAME)
             species = pd.read_sql_query(f"SELECT DISTINCT species from {data_type}", conn)["species"].tolist()
             r.set(species_cache_key, json.dumps(species))
+            log_cache(False, request)
 
         table_metadata_cache_key = f'{data_type}_table_metadata'
         if r.exists(table_metadata_cache_key):
             table_metadata = json.loads(r.get(table_metadata_cache_key).decode('ascii'))
+            log_cache(True, request, table_metadata_cache_key)
         else:
             table_metadata = athena_client.get_table_metadata(CatalogName=AWS_DATA_CATALOG, DatabaseName=AWS_SCHEMA_DATABASE_NAME, TableName=data_type)["TableMetadata"]["Columns"]
             r.set(table_metadata_cache_key, json.dumps(table_metadata))
+            log_cache(False, request)
 
         return {'columns': table_metadata, 'species': species}
     except Exception as err:
@@ -354,6 +365,7 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
         else: cache_key = base64.b64encode(bytes(''.join(sorted(data_type + species + fields)) + species, 'utf-8'))
         if(r.exists(cache_key)):
             query_id = r.get(cache_key).decode('ascii')
+            log_cache(True, request, cache_key)
         else:
             filters = "AND " + condition if condition else ""
             query_id = athena_client.start_query_execution(
@@ -365,6 +377,7 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
                 },
             )["QueryExecutionId"]
             r.set(cache_key, query_id)
+            log_cache(False, request)
 
         # https://tools.ietf.org/id/draft-kelly-json-hal-01.html
         return JSONResponse(content={
