@@ -1,0 +1,241 @@
+{
+	"info": {
+		"_postman_id": "a384068c-7796-4fc4-be04-a4bf57209280",
+		"name": "GSoC'22",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "6779085"
+	},
+	"item": [
+		{
+			"name": "/",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{url}}/",
+					"host": [
+						"{{url}}"
+					],
+					"path": [
+						""
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "/data",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{url}}/data",
+					"host": [
+						"{{url}}"
+					],
+					"path": [
+						"data"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "/{data_type}/columns",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{url}}{data_type}/columns",
+					"host": [
+						"{{url}}{data_type}"
+					],
+					"path": [
+						"columns"
+					]
+				}
+			},
+			"response": [
+				{
+					"name": "/gene/columns",
+					"originalRequest": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{url}}/gene/columns",
+							"host": [
+								"{{url}}"
+							],
+							"path": [
+								"gene",
+								"columns"
+							]
+						}
+					},
+					"status": "OK",
+					"code": 200,
+					"_postman_previewlanguage": "json",
+					"header": [
+						{
+							"key": "date",
+							"value": "Mon, 25 Jul 2022 21:52:25 GMT"
+						},
+						{
+							"key": "server",
+							"value": "uvicorn"
+						},
+						{
+							"key": "content-length",
+							"value": "593"
+						},
+						{
+							"key": "content-type",
+							"value": "application/json"
+						},
+						{
+							"key": "x-correlation-id",
+							"value": "86a4e911-a2b2-4b10-b0f0-60759d88bb73"
+						}
+					],
+					"cookie": [],
+					"body": "{\n    \"columns\": [\n        {\n            \"Name\": \"gene_id\",\n            \"Type\": \"bigint\"\n        },\n        {\n            \"Name\": \"gene_stable_id\",\n            \"Type\": \"string\"\n        },\n        {\n            \"Name\": \"gene_stable_id_version\",\n            \"Type\": \"bigint\"\n        },\n        {\n            \"Name\": \"gene_chr\",\n            \"Type\": \"string\"\n        },\n        {\n            \"Name\": \"gene_start\",\n            \"Type\": \"bigint\"\n        },\n        {\n            \"Name\": \"gene_end\",\n            \"Type\": \"bigint\"\n        },\n        {\n            \"Name\": \"gene_biotype\",\n            \"Type\": \"string\"\n        },\n        {\n            \"Name\": \"gene_symbol_id\",\n            \"Type\": \"string\"\n        },\n        {\n            \"Name\": \"gene_symbol\",\n            \"Type\": \"string\"\n        },\n        {\n            \"Name\": \"canonical_transcript_stable_id\",\n            \"Type\": \"string\"\n        },\n        {\n            \"Name\": \"canonical_transcript_stable_id_version\",\n            \"Type\": \"bigint\"\n        },\n        {\n            \"Name\": \"canonical_transcript_biotype\",\n            \"Type\": \"string\"\n        }\n    ],\n    \"species\": [\n        \"homo_sapiens\",\n        \"mus_musculus\"\n    ]\n}"
+				}
+			]
+		},
+		{
+			"name": "/query/{queryID}/status",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{url}}/query/{queryID}/status",
+					"host": [
+						"{{url}}"
+					],
+					"path": [
+						"query",
+						"{queryID}",
+						"status"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "/query/{queryID}/preview",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{url}}/query/{queryID}/preview",
+					"host": [
+						"{{url}}"
+					],
+					"path": [
+						"query",
+						"{queryID}",
+						"preview"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "/query/{data_type}/{species}",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{url}}/query/{data_type}/{species}",
+					"host": [
+						"{{url}}"
+					],
+					"path": [
+						"query",
+						"{data_type}",
+						"{species}"
+					],
+					"query": [
+						{
+							"key": "condition",
+							"value": null,
+							"disabled": true
+						},
+						{
+							"key": "fields",
+							"value": null,
+							"disabled": true
+						}
+					]
+				}
+			},
+			"response": [
+				{
+					"name": "/query/{data_type}/{species}",
+					"originalRequest": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{url}}/query/gene/homo_sapiens?condition=gene_id=554 AND gene_stable_id='eNSG00000210049'",
+							"host": [
+								"{{url}}"
+							],
+							"path": [
+								"query",
+								"gene",
+								"homo_sapiens"
+							],
+							"query": [
+								{
+									"key": "condition",
+									"value": "gene_id=554 AND gene_stable_id='eNSG00000210049'"
+								},
+								{
+									"key": "fields",
+									"value": null,
+									"disabled": true
+								}
+							]
+						}
+					},
+					"_postman_previewlanguage": null,
+					"header": null,
+					"cookie": [],
+					"body": null
+				},
+				{
+					"name": "/query/{data_type}/{species} Copy",
+					"originalRequest": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{url}}/query/gene/homo_sapiens?condition=gene_id=554 AND gene_stable_id='eNSG00000210049'&fields=gene_id,gene_stable_id",
+							"host": [
+								"{{url}}"
+							],
+							"path": [
+								"query",
+								"gene",
+								"homo_sapiens"
+							],
+							"query": [
+								{
+									"key": "condition",
+									"value": "gene_id=554 AND gene_stable_id='eNSG00000210049'"
+								},
+								{
+									"key": "fields",
+									"value": "gene_id,gene_stable_id"
+								}
+							]
+						}
+					},
+					"_postman_previewlanguage": null,
+					"header": null,
+					"cookie": [],
+					"body": null
+				}
+			]
+		}
+	]
+}
