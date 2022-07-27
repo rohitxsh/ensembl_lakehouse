@@ -1,11 +1,10 @@
 from contextlib import suppress
-from xmlrpc.client import boolean
-from fastapi import FastAPI, HTTPException, Request, Response, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pyathena import connect
 from redis import Redis
-from time import time
+from time import time, sleep
 from typing import Optional
 from uuid import uuid4
 import pandas as pd
@@ -21,14 +20,14 @@ import uvicorn
 AWS_DATA_CATALOG = "AwsDataCatalog"
 AWS_SCHEMA_DATABASE_NAME = "ensembl-parquet-meta-schema"
 AWS_S3_OUTPUT_DIR = "s3://ensembl-athena-results/"
-
+SUPPORTED_FILE_FORMATS = ["csv", "tsv", "xlsx", "json", "xml", "feather", "parquet",]
 
 logging.basicConfig(filename="log.txt", level=logging.DEBUG, format='%(asctime)s %(levelname)s %(module)s %(name)s %(message)s')
 logger = logging.getLogger(__name__)
 
 redis_host = os.getenv("REDIS_HOST", "localhost")
-refis_port = os.getenv("REDIS_PORT", 6379)
-r = Redis(host=redis_host, port=refis_port, db=0)
+redis_port = os.getenv("REDIS_PORT", 6379)
+r = Redis(host=redis_host, port=redis_port, db=0)
 
 app = FastAPI(debug=True)
 
@@ -45,19 +44,19 @@ async def log_requests(request: Request, call_next) -> Response:
     response = await call_next(request)
     end_time = (time() - start_time) * 1000
 
-    if (request.query_params): logger.info(f"{request.state.id} {request.url.path}?{request.query_params} Time={'{0:.2f}'.format(end_time)} ms status_code={response.status_code}")
-    else: logger.info(f"{request.state.id} {request.method} {request.url.path} Time={'{0:.2f}'.format(end_time)}ms status_code={response.status_code}")
+    request_query_params = f"?{str(request.query_params)}" if request.query_params else ""
+    logger.info(f"{request.state.id} {request.url.path}{request_query_params} Time={'{0:.2f}'.format(end_time)} ms status_code={response.status_code}")
 
     response.headers['X-Correlation-ID'] = request.state.id
     return response
 
 def log_error(err: str, request: Request) -> None:
-    if (request.query_params): logger.error(f"{request.state.id} {request.url.path}?{request.query_params} err=\"{err}\"")
-    else: logger.error(f"{request.state.id} {request.method} {request.url.path} err=\"{err}\"")
+    request_query_params = f"?{str(request.query_params)}" if request.query_params else ""
+    logger.error(f"{request.state.id} {request.url.path}{request_query_params} err=\"{err}\"")
 
-def log_cache(bool: boolean, request: Request, key: str = None) -> None:
-    if (request.query_params): logger.info(f"{request.state.id} {request.url.path}?{request.query_params} cache={bool} key={key}" if key else f"{request.state.id} {request.url.path}?{request.query_params} cache={bool}")
-    else:logger.info(f"{request.state.id} {request.method} {request.url.path} cache={bool} key={key}" if key else f"{request.state.id} {request.method} {request.url.path} cache={bool}")
+def log_cache(bool: bool, request: Request, key: str = None) -> None:
+    request_query_params = f"?{str(request.query_params)}" if request.query_params else ""
+    logger.info(f"{request.state.id} {request.url.path}{request_query_params} cache={bool} key={key}" if key else f"{request.state.id} {request.url.path}?{request.query_params} cache={bool}")
 
 # customise OpenAPI schema doc
 def custom_openapi():
@@ -78,6 +77,38 @@ def custom_openapi():
     return app.openapi_schema
 
 app.openapi = custom_openapi
+
+
+# background tasks
+def file_format_converter(queryID: str, df_input: str, file_format: str, cache_key: str, id: str):
+    try:
+        logger.info(f"Background task started id:{id} func:file_format_converter params:{{df_input:{df_input},file_format:{file_format}}}")
+        r.set(cache_key, "PROCESSING")
+
+        df = pd.read_csv(df_input, low_memory=False)
+        s3_key = AWS_S3_OUTPUT_DIR + f"{queryID}.{file_format}"
+        if (file_format == "tsv"):
+            df.to_csv(s3_key, sep="\t", index=False)
+        elif (file_format == "xlsx"):
+            df.to_excel(s3_key, index=False)
+        elif (file_format == "json"):
+            df.to_json(s3_key, index=False, orient="split")
+        elif (file_format == "xml"):
+            df.to_xml(s3_key, index=False)
+        elif (file_format == "feather"):
+            df.to_feather(s3_key)
+        elif (file_format == "parquet"):
+            df.to_parquet(s3_key, index=False)
+
+        logger.info(f"Background task id:{id} func:file_format_converter params:{{df_input:{df_input},file_format:{file_format}}} status:DONE")
+        r.set(cache_key, "DONE")
+    except Exception as err:
+        logger.info(f"Background task id:{id} func:file_format_converter params:{{df_input:{df_input},file_format:{file_format}}} status: FAILED detail:{str(err)}")
+        r.set(cache_key, "FAILED")
+
+def delete_key_from_cache_after_one_min(cache_key):
+    sleep(60)
+    r.delete(cache_key)
 
 
 @app.get("/",
@@ -260,6 +291,98 @@ async def query_status(queryID: str, request: Request):
 
 
 @app.get(
+    "/query/{queryID}/export",
+    responses={
+        202: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "ACCEPTED",
+                    }
+                }
+            },
+        },
+        200: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "'PROCESSING'|'FAILED'",
+                    }
+                }
+            },
+        },
+        200: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "DONE",
+                        "result": "https://example.com/?expiry=1hr"
+                    }
+                }
+            },
+        },
+        400: {
+            "content": {
+                "application/json": {
+                    "example": {"detail_example_1": "Invalid queryID!",
+                                "detail_example_2": "Cannot export (NOTE: Result can only be exported, if query execution status state = SUCCEEDED).",
+                                "detail_example_3": "Invalid result file format, supported file formats: ['csv', 'tsv', 'xls', 'xlsx', 'json', 'html', 'xml', 'latex', 'feather', 'parquet', 'stata']"}
+                }
+            },
+        },
+        404: {
+            "content": {
+                "application/json": {
+                    "example": {"detail": "QueryID does not exist / invalid queryID!"}
+                }
+            },
+        }
+    }
+)
+async def export_query_result(queryID: str, request: Request, background_tasks: BackgroundTasks, file_format: str = "csv"):
+    # validate queryID and query execution status state
+    queryID = queryID.strip()
+    if not queryID: raise HTTPException(status_code=400, detail="Invalid queryID!")
+    try:
+        query_response = athena_client.get_query_execution( QueryExecutionId = queryID )
+        if query_response['QueryExecution']['Status']['State'] != 'SUCCEEDED':
+            raise Exception("Cannot export (NOTE: Result can only be exported, if query execution status state = SUCCEEDED).")
+    except Exception as err:
+        log_error(str(err), request)
+        if "Cannot export" in str(err):
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        elif "was not found" in str(err):
+            raise HTTPException(status_code=404, detail="QueryID does not exist / invalid queryID!") from err
+        raise HTTPException(status_code=500) from err
+
+    # validate file_format
+    if file_format not in SUPPORTED_FILE_FORMATS: raise HTTPException(status_code=400, detail=f"Invalid result file format, supported file formats: {SUPPORTED_FILE_FORMATS}")
+
+    try:
+        # validate if file exists in S3
+        s3_client.head_object(Bucket='ensembl-athena-results', Key=f'{queryID}.{file_format}')
+        result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.{file_format}'}, ExpiresIn=3600)
+        return {'status': "DONE", 'result': result_file_temp_presigned_url}
+    except Exception as err:
+        if "An error occurred (404) when calling the HeadObject operation: Not Found" in str(err):
+            try:
+                cache_key = f"{queryID}.{file_format}"
+                if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "PROCESSING"):
+                    return {"status": "PROCESSING"}
+                if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "FAILED"):
+                    background_tasks.add_task(delete_key_from_cache_after_one_min, cache_key)
+                    return {"status": "FAILED, try again later after some time!"}
+                # start a background process with csv result file as input
+                df_input = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=3600)
+                background_tasks.add_task(file_format_converter, queryID, df_input, file_format, cache_key, request.state.id)
+                r.set(cache_key, "QUEUED")
+                return JSONResponse(content={"status": "ACCEPTED"}, status_code=202)
+            except Exception as e:
+                log_error(str(e), request)
+        raise HTTPException(status_code=500) from err
+
+
+@app.get(
     "/query/{queryID}/preview",
     responses={
         200: {
@@ -289,7 +412,7 @@ async def query_status(queryID: str, request: Request):
         400: {
             "content": {
                 "application/json": {
-                    "example": {"detail_example_1": "Cannot retrieve result preview (NOTE: Result preview is only available, if query status state is SUCCEEDED).",
+                    "example": {"detail_example_1": "Cannot retrieve result preview (NOTE: Result preview is only available, if query execution status state = SUCCEEDED).",
                                 "detail_example_2": "Invalid queryID!"}
                 }
             },
@@ -303,13 +426,14 @@ async def query_status(queryID: str, request: Request):
         }
     }
 )
-async def query_result_preview(queryID: str, request: Request):
+async def query_result_preview(queryID: str, request: Request, maxResults: int = 26):
     queryID = queryID.strip()
     if not queryID: raise HTTPException(status_code=400, detail="Invalid queryID!")
+    if maxResults>1000 or maxResults<1: raise HTTPException(status_code=400, detail="Allowed range for maxResults is 1-1000!")
     try:
         query_response = athena_client.get_query_results(
             QueryExecutionId=queryID,
-            MaxResults=26
+            MaxResults=maxResults
         )
         # remove unnecessary data from AWS response
         del query_response['ResultSet']['ResultSetMetadata']
@@ -317,7 +441,7 @@ async def query_result_preview(queryID: str, request: Request):
     except Exception as err:
         log_error(str(err), request)
         if "InvalidRequestException" in str(err):
-            raise HTTPException(status_code=400, detail="Cannot retrieve result preview (NOTE: Result preview is only available, if query status state is SUCCEEDED).") from err
+            raise HTTPException(status_code=400, detail="Cannot retrieve result preview (NOTE: Result preview is only available, if query execution status state = SUCCEEDED).") from err
         elif "was not found" in str(err):
             raise HTTPException(status_code=404, detail="QueryID does not exist / invalid queryID!") from err
         raise HTTPException(status_code=500) from err
@@ -361,7 +485,7 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
         description="Comma seperated fields ex.: gene_id,gene_stable_id",
     ), condition: Optional[str] = Query(
         default=None,
-        description="Condition to filter the data on, similar to SQL WHERE clause ex.: gene_id=554 AND gene_stable_id='eNSG00000210049'",
+        description="Condition to filter the data on, similar to SQL WHERE clause ex.: gene_id=554 AND gene_stable_id='ENSG00000210049'",
     )
 ):
     data_type = data_type.strip()
@@ -392,7 +516,8 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
             '_links': {
                 'self': {'href': str(request.url.path)},
                 'status': {'href': app.url_path_for('query_status', queryID=query_id)},
-                'preview': {'href': app.url_path_for('query_result_preview', queryID=query_id)}
+                'preview': {'href': app.url_path_for('query_result_preview', queryID=query_id)},
+                'export': {'href': app.url_path_for('export_query_result', queryID=query_id), "supported_file_formats": SUPPORTED_FILE_FORMATS}
             }
         }, media_type="application/hal+json")
     except Exception as err:
