@@ -20,7 +20,7 @@ import uvicorn
 AWS_DATA_CATALOG = "AwsDataCatalog"
 AWS_SCHEMA_DATABASE_NAME = "ensembl-parquet-meta-schema"
 AWS_S3_OUTPUT_DIR = "s3://ensembl-athena-results/"
-SUPPORTED_FILE_FORMATS = ["csv", "tsv", "xlsx", "json", "xml", "feather", "parquet",]
+SUPPORTED_FILE_FORMATS = ["csv", "tsv", "xlsx", "json", "xml", "feather", "parquet"]
 
 logging.basicConfig(filename="log.txt", level=logging.DEBUG, format='%(asctime)s %(levelname)s %(module)s %(name)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -82,28 +82,22 @@ app.openapi = custom_openapi
 # background tasks
 def file_format_converter(queryID: str, df_input: str, file_format: str, cache_key: str, id: str):
     try:
-        logger.info(f"Background task started id:{id} func:file_format_converter params:{{df_input:{df_input},file_format:{file_format}}}")
+        logger.info(f"Background task id:{id} status:PROCESSING func:file_format_converter params:{{file_format:{file_format}}}")
         r.set(cache_key, "PROCESSING")
 
         df = pd.read_csv(df_input, low_memory=False)
         s3_key = AWS_S3_OUTPUT_DIR + f"{queryID}.{file_format}"
-        if (file_format == "tsv"):
-            df.to_csv(s3_key, sep="\t", index=False)
-        elif (file_format == "xlsx"):
-            df.to_excel(s3_key, index=False)
-        elif (file_format == "json"):
-            df.to_json(s3_key, index=False, orient="split")
-        elif (file_format == "xml"):
-            df.to_xml(s3_key, index=False)
-        elif (file_format == "feather"):
-            df.to_feather(s3_key)
-        elif (file_format == "parquet"):
-            df.to_parquet(s3_key, index=False)
+        if (file_format == "tsv"): df.to_csv(s3_key, sep="\t", index=False)
+        elif (file_format == "xlsx"): df.to_excel(s3_key, index=False)
+        elif (file_format == "json"): df.to_json(s3_key, index=False, orient="split")
+        elif (file_format == "xml"): df.to_xml(s3_key, index=False)
+        elif (file_format == "feather"): df.to_feather(s3_key)
+        elif (file_format == "parquet"): df.to_parquet(s3_key, index=False)
 
-        logger.info(f"Background task id:{id} func:file_format_converter params:{{df_input:{df_input},file_format:{file_format}}} status:DONE")
+        logger.info(f"Background task id:{id} status:DONE func:file_format_converter params:{{file_format:{file_format}}}")
         r.set(cache_key, "DONE")
     except Exception as err:
-        logger.info(f"Background task id:{id} func:file_format_converter params:{{df_input:{df_input},file_format:{file_format}}} status: FAILED detail:{str(err)}")
+        logger.info(f"Background task id:{id} status:FAILED func:file_format_converter params:{{file_format:{file_format}}} error_detail:{str(err)}")
         r.set(cache_key, "FAILED")
 
 def delete_key_from_cache_after_one_min(cache_key):
@@ -306,17 +300,8 @@ async def query_status(queryID: str, request: Request):
             "content": {
                 "application/json": {
                     "example": {
-                        "status": "'PROCESSING'|'FAILED'",
-                    }
-                }
-            },
-        },
-        200: {
-            "content": {
-                "application/json": {
-                    "example": {
-                        "status": "DONE",
-                        "result": "https://example.com/?expiry=1hr"
+                        "status": "'PROCESSING' | 'DONE' | 'FAILED, you can try again after one minute interval!'",
+                        "result": "https://example.com/?expiry=1hr (Available only if status='DONE')"
                     }
                 }
             },
@@ -326,7 +311,7 @@ async def query_status(queryID: str, request: Request):
                 "application/json": {
                     "example": {"detail_example_1": "Invalid queryID!",
                                 "detail_example_2": "Cannot export (NOTE: Result can only be exported, if query execution status state = SUCCEEDED).",
-                                "detail_example_3": "Invalid result file format, supported file formats: ['csv', 'tsv', 'xls', 'xlsx', 'json', 'html', 'xml', 'latex', 'feather', 'parquet', 'stata']"}
+                                "detail_example_3": f"Invalid result file format, supported file formats: {SUPPORTED_FILE_FORMATS}"}
                 }
             },
         },
@@ -370,8 +355,9 @@ async def export_query_result(queryID: str, request: Request, background_tasks: 
                 if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "PROCESSING"):
                     return {"status": "PROCESSING"}
                 if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "FAILED"):
+                    # delete key after one minute
                     background_tasks.add_task(delete_key_from_cache_after_one_min, cache_key)
-                    return {"status": "FAILED, try again later after some time!"}
+                    return {"status": "FAILED, you can try again after one minute interval!"}
                 # start a background process with csv result file as input
                 df_input = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=3600)
                 background_tasks.add_task(file_format_converter, queryID, df_input, file_format, cache_key, request.state.id)
