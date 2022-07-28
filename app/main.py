@@ -78,6 +78,13 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
+def valid_query_id(queryID: str):
+    if not queryID: return False
+    # AWS Athena query ID format is a md5 hash with 4 hyphen
+    if ( queryID.count('-') != 4 ): return False
+    # length of query id = 32 (md5 hash length) + 4 (hyphen)
+    if ( len(queryID) != 36 ): return False
+    return True
 
 # background tasks
 def file_format_converter(queryID: str, df_input: str, file_format: str, cache_key: str, id: str):
@@ -261,7 +268,7 @@ async def read_filters(data_type: str, request: Request):
         404: {
             "content": {
                 "application/json": {
-                    "example": {"detail": "QueryID does not exist / invalid queryID!"}
+                    "example": {"detail": "QueryID not found!"}
                 }
             },
         },
@@ -269,7 +276,7 @@ async def read_filters(data_type: str, request: Request):
 )
 async def query_status(queryID: str, request: Request):
     queryID = queryID.strip()
-    if not queryID: raise HTTPException(status_code=400, detail="Invalid queryID!")
+    if not valid_query_id(queryID): raise HTTPException(status_code=400, detail="Invalid queryID!")
     try:
         # 'State': 'QUEUED'|'RUNNING'|'SUCCEEDED'|'FAILED'|'CANCELLED'
         query_response = athena_client.get_query_execution( QueryExecutionId = queryID )
@@ -280,7 +287,7 @@ async def query_status(queryID: str, request: Request):
         return {'status': query_response['QueryExecution']['Status']['State'], 'result': result_file_temp_presigned_url}
     except Exception as err:
         log_error(str(err), request)
-        if "was not found" in str(err): raise HTTPException(status_code=404, detail="QueryID does not exist / invalid queryID!") from err
+        if "was not found" in str(err): raise HTTPException(status_code=404, detail="QueryID not found!") from err
         raise HTTPException(status_code=500) from err
 
 
@@ -318,7 +325,7 @@ async def query_status(queryID: str, request: Request):
         404: {
             "content": {
                 "application/json": {
-                    "example": {"detail": "QueryID does not exist / invalid queryID!"}
+                    "example": {"detail": "QueryID not found!"}
                 }
             },
         }
@@ -327,7 +334,7 @@ async def query_status(queryID: str, request: Request):
 async def export_query_result(queryID: str, request: Request, background_tasks: BackgroundTasks, file_format: str = "csv"):
     # validate queryID and query execution status state
     queryID = queryID.strip()
-    if not queryID: raise HTTPException(status_code=400, detail="Invalid queryID!")
+    if not valid_query_id(queryID): raise HTTPException(status_code=400, detail="Invalid queryID!")
     try:
         query_response = athena_client.get_query_execution( QueryExecutionId = queryID )
         if query_response['QueryExecution']['Status']['State'] != 'SUCCEEDED':
@@ -337,7 +344,7 @@ async def export_query_result(queryID: str, request: Request, background_tasks: 
         if "Cannot export" in str(err):
             raise HTTPException(status_code=400, detail=str(err)) from err
         elif "was not found" in str(err):
-            raise HTTPException(status_code=404, detail="QueryID does not exist / invalid queryID!") from err
+            raise HTTPException(status_code=404, detail="QueryID not found!") from err
         raise HTTPException(status_code=500) from err
 
     # validate file_format
@@ -406,7 +413,7 @@ async def export_query_result(queryID: str, request: Request, background_tasks: 
         404: {
             "content": {
                 "application/json": {
-                    "example": {"detail": "QueryID does not exist / invalid queryID!"}
+                    "example": {"detail": "QueryID not found!"}
                 }
             },
         }
@@ -414,7 +421,7 @@ async def export_query_result(queryID: str, request: Request, background_tasks: 
 )
 async def query_result_preview(queryID: str, request: Request, maxResults: int = 26):
     queryID = queryID.strip()
-    if not queryID: raise HTTPException(status_code=400, detail="Invalid queryID!")
+    if not valid_query_id(queryID): raise HTTPException(status_code=400, detail="Invalid queryID!")
     if maxResults>1000 or maxResults<1: raise HTTPException(status_code=400, detail="Allowed range for maxResults is 1-1000!")
     try:
         query_response = athena_client.get_query_results(
@@ -429,7 +436,7 @@ async def query_result_preview(queryID: str, request: Request, maxResults: int =
         if "InvalidRequestException" in str(err):
             raise HTTPException(status_code=400, detail="Cannot retrieve result preview (NOTE: Result preview is only available, if query execution status state = SUCCEEDED).") from err
         elif "was not found" in str(err):
-            raise HTTPException(status_code=404, detail="QueryID does not exist / invalid queryID!") from err
+            raise HTTPException(status_code=404, detail="QueryID not found!") from err
         raise HTTPException(status_code=500) from err
 
 
