@@ -32,6 +32,7 @@ AWS_DATA_CATALOG = "AwsDataCatalog"
 AWS_SCHEMA_DATABASE_NAME = "ensembl-parquet-meta-schema"
 AWS_S3_OUTPUT_DIR = "s3://ensembl-athena-results/"
 SUPPORTED_FILE_FORMATS = [e.value for e in SupportedFileFormats]
+PRESIGNED_URL_EXPIRATION_TIME = 3600
 
 
 logging.basicConfig(filename="log.txt", level=logging.DEBUG, format='%(asctime)s %(levelname)s %(module)s %(name)s %(message)s')
@@ -119,8 +120,8 @@ def file_format_converter(queryID: str, df_input: str, file_format: str, cache_k
         logger.info(f"Background task id:{id} status:FAILED func:file_format_converter params:{{file_format:{file_format}}} error_detail:{str(err)}")
         r.set(cache_key, "FAILED")
 
-def delete_key_from_cache_after_one_min(cache_key):
-    sleep(60)
+def delete_key_from_cache(cache_key, wait_time = 0):
+    sleep(wait_time)  # in seconds
     r.delete(cache_key)
 
 
@@ -295,7 +296,7 @@ async def query_status(queryID: str, request: Request):
         if query_response['QueryExecution']['Status']['State'] != 'SUCCEEDED':
             return {'status': query_response['QueryExecution']['Status']['State']}
         # fetch temporary pre-signed S3 result object URL (expiry = 1hr)
-        result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=3600)
+        result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=PRESIGNED_URL_EXPIRATION_TIME)
         return {'status': query_response['QueryExecution']['Status']['State'], 'result': result_file_temp_presigned_url}
     except Exception as err:
         log_error(str(err), request)
@@ -365,7 +366,7 @@ async def export_query_result(queryID: str, request: Request, background_tasks: 
     try:
         # validate if file exists in S3
         s3_client.head_object(Bucket='ensembl-athena-results', Key=f'{queryID}.{file_format}')
-        result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.{file_format}'}, ExpiresIn=3600)
+        result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.{file_format}'}, ExpiresIn=PRESIGNED_URL_EXPIRATION_TIME)
         return {'status': "DONE", 'result': result_file_temp_presigned_url}
     except Exception as err:
         if "An error occurred (404) when calling the HeadObject operation: Not Found" in str(err):
@@ -375,10 +376,10 @@ async def export_query_result(queryID: str, request: Request, background_tasks: 
                     return {"status": "PROCESSING"}
                 if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "FAILED"):
                     # delete key after one minute
-                    background_tasks.add_task(delete_key_from_cache_after_one_min, cache_key)
+                    background_tasks.add_task(delete_key_from_cache, cache_key, 60)
                     return {"status": "FAILED, you can try again after one minute interval!"}
                 # start a background process with csv result file as input
-                df_input = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=3600)
+                df_input = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=PRESIGNED_URL_EXPIRATION_TIME)
                 background_tasks.add_task(file_format_converter, queryID, df_input, file_format, cache_key, request.state.id)
                 r.set(cache_key, "QUEUED")
                 return JSONResponse(content={"status": "ACCEPTED"}, status_code=202)
