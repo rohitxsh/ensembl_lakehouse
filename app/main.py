@@ -514,6 +514,8 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
                 },
             )["QueryExecutionId"]
             r.set(cache_key, query_id)
+            # automatically expire/delete redis cache keys after 44 days as Athena history is retained for 45 days
+            r.expire(cache_key, 3801600)
             log_cache(False, request)
 
         # https://tools.ietf.org/id/draft-kelly-json-hal-01.html
