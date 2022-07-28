@@ -1,6 +1,6 @@
 # Ensembl's data lakehouse backend | GSoC '22
 
-Recommended: Python 3.x.x
+Recommended: Python 3.9.13
 
 Run the script via  
 - `Command line`:
