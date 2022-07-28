@@ -1,4 +1,5 @@
 from contextlib import suppress
+from enum import Enum
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -16,11 +17,22 @@ import os
 import uvicorn
 
 
+class SupportedFileFormats(str, Enum):
+    csv = "csv"
+    tsv = "tsv"
+    xlsx = "xlsx"
+    json = "json"
+    xml = "xml"
+    feather = "feather"
+    parquet = "parquet"
+
+
 # constants
 AWS_DATA_CATALOG = "AwsDataCatalog"
 AWS_SCHEMA_DATABASE_NAME = "ensembl-parquet-meta-schema"
 AWS_S3_OUTPUT_DIR = "s3://ensembl-athena-results/"
-SUPPORTED_FILE_FORMATS = ["csv", "tsv", "xlsx", "json", "xml", "feather", "parquet"]
+SUPPORTED_FILE_FORMATS = [e.value for e in SupportedFileFormats]
+
 
 logging.basicConfig(filename="log.txt", level=logging.DEBUG, format='%(asctime)s %(levelname)s %(module)s %(name)s %(message)s')
 logger = logging.getLogger(__name__)
@@ -75,7 +87,6 @@ def custom_openapi():
             del openapi_schema["paths"][method]["post"]["responses"]["422"]
     app.openapi_schema = openapi_schema
     return app.openapi_schema
-
 app.openapi = custom_openapi
 
 def valid_query_id(queryID: str):
@@ -85,6 +96,7 @@ def valid_query_id(queryID: str):
     # length of query id = 32 (md5 hash length) + 4 (hyphen)
     if ( len(queryID) != 36 ): return False
     return True
+
 
 # background tasks
 def file_format_converter(queryID: str, df_input: str, file_format: str, cache_key: str, id: str):
@@ -331,7 +343,7 @@ async def query_status(queryID: str, request: Request):
         }
     }
 )
-async def export_query_result(queryID: str, request: Request, background_tasks: BackgroundTasks, file_format: str = "csv"):
+async def export_query_result(queryID: str, request: Request, background_tasks: BackgroundTasks, file_format: SupportedFileFormats):
     # validate queryID and query execution status state
     queryID = queryID.strip()
     if not valid_query_id(queryID): raise HTTPException(status_code=400, detail="Invalid queryID!")
