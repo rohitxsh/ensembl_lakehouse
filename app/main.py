@@ -1,10 +1,8 @@
 from contextlib import suppress
-from xmlrpc.client import boolean
-from fastapi import FastAPI, HTTPException, Request, Response, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pyathena import connect
-from redis import Redis
 from time import time
 from typing import Optional
 from uuid import uuid4
@@ -13,22 +11,14 @@ import base64
 import boto3
 import json
 import logging
-import os
 import uvicorn
 
-
-# constants
-AWS_DATA_CATALOG = "AwsDataCatalog"
-AWS_SCHEMA_DATABASE_NAME = "ensembl-parquet-meta-schema"
-AWS_S3_OUTPUT_DIR = "s3://ensembl-athena-results/"
-
+from app.constants import *
+from app.redis_setup import *
+from app.tasks import file_format_converter, delete_key_from_cache
 
 logging.basicConfig(filename="log.txt", level=logging.DEBUG, format='%(asctime)s %(levelname)s %(module)s %(name)s %(message)s')
 logger = logging.getLogger(__name__)
-
-redis_host = os.getenv("REDIS_HOST", "localhost")
-refis_port = os.getenv("REDIS_PORT", 6379)
-r = Redis(host=redis_host, port=refis_port, db=0)
 
 app = FastAPI(debug=True)
 
@@ -45,24 +35,20 @@ async def log_requests(request: Request, call_next) -> Response:
     response = await call_next(request)
     end_time = (time() - start_time) * 1000
 
-    if (request.query_params): logger.info(f"{request.state.id} {request.url.path}?{request.query_params} Time={'{0:.2f}'.format(end_time)} ms status_code={response.status_code}")
-    else: logger.info(f"{request.state.id} {request.method} {request.url.path} Time={'{0:.2f}'.format(end_time)}ms status_code={response.status_code}")
+    logger.info(f"{request.state.id} {request.url.path}{f'?{str(request.query_params)}' if request.query_params else ''} Time={'{0:.2f}'.format(end_time)} ms status_code={response.status_code}")
 
     response.headers['X-Correlation-ID'] = request.state.id
     return response
 
 def log_error(err: str, request: Request) -> None:
-    if (request.query_params): logger.error(f"{request.state.id} {request.url.path}?{request.query_params} err=\"{err}\"")
-    else: logger.error(f"{request.state.id} {request.method} {request.url.path} err=\"{err}\"")
+    logger.error(f"{request.state.id} {request.url.path}{f'?{str(request.query_params)}' if request.query_params else ''} err=\"{err}\"")
 
-def log_cache(bool: boolean, request: Request, key: str = None) -> None:
-    if (request.query_params): logger.info(f"{request.state.id} {request.url.path}?{request.query_params} cache={bool} key={key}" if key else f"{request.state.id} {request.url.path}?{request.query_params} cache={bool}")
-    else:logger.info(f"{request.state.id} {request.method} {request.url.path} cache={bool} key={key}" if key else f"{request.state.id} {request.method} {request.url.path} cache={bool}")
+def log_cache_hits(bool: bool, request: Request, cache_key: str = None) -> None:
+    logger.info(f"{request.state.id} {request.url.path}{f'?{str(request.query_params)}' if request.query_params else ''} cache={bool}{f' key={cache_key}' if cache_key else ''}")
 
 # customise OpenAPI schema doc
 def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
+    if app.openapi_schema: return app.openapi_schema
     openapi_schema = get_openapi(
         title="Ensembl lakehouse",
         version="0.1.0",
@@ -71,13 +57,21 @@ def custom_openapi():
     )
     # remove 422 error codes from doc
     for method in openapi_schema["paths"]:
-        with suppress(KeyError):
-            del openapi_schema["paths"][method]["get"]["responses"]["422"]
-            del openapi_schema["paths"][method]["post"]["responses"]["422"]
+        if (method != "/query/{queryID}/export"):
+            with suppress(KeyError):
+                del openapi_schema["paths"][method]["get"]["responses"]["422"]
+                del openapi_schema["paths"][method]["post"]["responses"]["422"]
     app.openapi_schema = openapi_schema
     return app.openapi_schema
-
 app.openapi = custom_openapi
+
+def valid_query_id(queryID: str):
+    if not queryID: return False
+    # AWS Athena query ID format is a md5 hash with 4 hyphen
+    if ( queryID.count('-') != 4 ): return False
+    # length of query id = 32 (md5 hash length) + 4 (hyphen)
+    if ( len(queryID) != 36 ): return False
+    return True
 
 
 @app.get("/",
@@ -126,7 +120,7 @@ async def read_all_filters(request: Request):
     try:
         if(r.exists('data')):
             query_response = json.loads(r.get('data').decode('ascii'))
-            log_cache(True, request, 'data')
+            log_cache_hits(True, request, 'data')
         else:
             query_response = athena_client.list_table_metadata(
                 CatalogName=AWS_DATA_CATALOG, DatabaseName=AWS_SCHEMA_DATABASE_NAME)["TableMetadataList"]
@@ -137,7 +131,7 @@ async def read_all_filters(request: Request):
                 del table["TableType"]
                 del table["Parameters"]
             r.set('data', json.dumps(query_response))
-            log_cache(False, request)
+            log_cache_hits(False, request)
         return query_response
     except Exception as err:
         log_error(str(err), request)
@@ -189,21 +183,21 @@ async def read_filters(data_type: str, request: Request):
         species_cache_key = f'{data_type}_species'
         if r.exists(species_cache_key):
             species = json.loads(r.get(species_cache_key).decode('ascii'))
-            log_cache(True, request, species_cache_key)
+            log_cache_hits(True, request, species_cache_key)
         else:
             conn = connect(s3_staging_dir=AWS_S3_OUTPUT_DIR, schema_name=AWS_SCHEMA_DATABASE_NAME)
             species = pd.read_sql_query(f"SELECT DISTINCT species from {data_type}", conn)["species"].tolist()
             r.set(species_cache_key, json.dumps(species))
-            log_cache(False, request)
+            log_cache_hits(False, request)
 
         table_metadata_cache_key = f'{data_type}_table_metadata'
         if r.exists(table_metadata_cache_key):
             table_metadata = json.loads(r.get(table_metadata_cache_key).decode('ascii'))
-            log_cache(True, request, table_metadata_cache_key)
+            log_cache_hits(True, request, table_metadata_cache_key)
         else:
             table_metadata = athena_client.get_table_metadata(CatalogName=AWS_DATA_CATALOG, DatabaseName=AWS_SCHEMA_DATABASE_NAME, TableName=data_type)["TableMetadata"]["Columns"]
             r.set(table_metadata_cache_key, json.dumps(table_metadata))
-            log_cache(False, request)
+            log_cache_hits(False, request)
 
         return {'columns': table_metadata, 'species': species}
     except Exception as err:
@@ -221,7 +215,7 @@ async def read_filters(data_type: str, request: Request):
                 "application/json": {
                     "example": {
                         "status": "'QUEUED'|'RUNNING'|'SUCCEEDED'|'FAILED'|'CANCELLED'",
-                        "result": "https://example.com/?expiry=1hr"
+                        "result": "https://example.com/?expiry=1hr (Available only if status='SUCCEEDED')"
                     }
                 }
             },
@@ -236,7 +230,7 @@ async def read_filters(data_type: str, request: Request):
         404: {
             "content": {
                 "application/json": {
-                    "example": {"detail": "QueryID does not exist / invalid queryID!"}
+                    "example": {"detail": "QueryID not found!"}
                 }
             },
         },
@@ -244,18 +238,99 @@ async def read_filters(data_type: str, request: Request):
 )
 async def query_status(queryID: str, request: Request):
     queryID = queryID.strip()
-    if not queryID: raise HTTPException(status_code=400, detail="Invalid queryID!")
+    if not valid_query_id(queryID): raise HTTPException(status_code=400, detail="Invalid queryID!")
     try:
         # 'State': 'QUEUED'|'RUNNING'|'SUCCEEDED'|'FAILED'|'CANCELLED'
         query_response = athena_client.get_query_execution( QueryExecutionId = queryID )
         if query_response['QueryExecution']['Status']['State'] != 'SUCCEEDED':
             return {'status': query_response['QueryExecution']['Status']['State']}
         # fetch temporary pre-signed S3 result object URL (expiry = 1hr)
-        result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=3600)
-        return {'status': query_response['QueryExecution']['Status']['State'], 'result': result_file_temp_presigned_url}
+        result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=PRESIGNED_URL_EXPIRATION_TIME)
+        return {'status': 'SUCCEEDED', 'result': result_file_temp_presigned_url}
     except Exception as err:
         log_error(str(err), request)
-        if "was not found" in str(err): raise HTTPException(status_code=404, detail="QueryID does not exist / invalid queryID!") from err
+        if "was not found" in str(err): raise HTTPException(status_code=404, detail="QueryID not found!") from err
+        raise HTTPException(status_code=500) from err
+
+
+@app.get(
+    "/query/{queryID}/export",
+    responses={
+        202: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "ACCEPTED",
+                    }
+                }
+            },
+        },
+        200: {
+            "content": {
+                "application/json": {
+                    "example": {
+                        "status": "'PROCESSING' | 'DONE' | 'FAILED, you can try again after one minute interval!'",
+                        "result": "https://example.com/?expiry=1hr (Available only if export status='DONE')"
+                    }
+                }
+            },
+        },
+        400: {
+            "content": {
+                "application/json": {
+                    "example": {"detail_example_1": "Invalid queryID!",
+                                "detail_example_2": "Cannot export (NOTE: Result can only be exported, if query execution status state = SUCCEEDED).",
+                                "detail_example_3": f"Invalid result file format, supported file formats: {SUPPORTED_FILE_FORMATS}"}
+                }
+            },
+        },
+        404: {
+            "content": {
+                "application/json": {
+                    "example": {"detail": "QueryID not found!"}
+                }
+            },
+        }
+    }
+)
+async def export_query_result(queryID: str, request: Request, file_format: SupportedFileFormats):
+    # validate queryID and query execution status state
+    queryID = queryID.strip()
+    if not valid_query_id(queryID): raise HTTPException(status_code=400, detail="Invalid queryID!")
+    try:
+        query_response = athena_client.get_query_execution( QueryExecutionId = queryID )
+        if query_response['QueryExecution']['Status']['State'] != 'SUCCEEDED':
+            raise Exception("Cannot export (NOTE: Result can only be exported, if query execution status state = SUCCEEDED).")
+    except Exception as err:
+        log_error(str(err), request)
+        if "Cannot export" in str(err):
+            raise HTTPException(status_code=400, detail=str(err)) from err
+        elif "was not found" in str(err):
+            raise HTTPException(status_code=404, detail="QueryID not found!") from err
+        raise HTTPException(status_code=500) from err
+
+    try:
+        # validate if file exists in S3
+        s3_client.head_object(Bucket='ensembl-athena-results', Key=f'{queryID}.{file_format}')
+        result_file_temp_presigned_url = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.{file_format}'}, ExpiresIn=PRESIGNED_URL_EXPIRATION_TIME)
+        return {'status': "DONE", 'result': result_file_temp_presigned_url}
+    except Exception as err:
+        if "An error occurred (404) when calling the HeadObject operation: Not Found" in str(err):
+            try:
+                cache_key = f"{queryID}.{file_format}"
+                if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "QUEUED"): return {"status": "QUEUED"}
+                if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "PROCESSING"): return {"status": "PROCESSING"}
+                if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "FAILED"):
+                    # delete key after one minute
+                    delete_key_from_cache.delay(cache_key, 60)
+                    return {"status": "FAILED, you can try again after one minute interval!"}
+                # start a background process with csv result file as input
+                df_input = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=PRESIGNED_URL_EXPIRATION_TIME)
+                file_format_converter.delay(queryID, df_input, file_format, cache_key, request.state.id)
+                r.set(cache_key, "QUEUED")
+                return JSONResponse(content={"status": "ACCEPTED"}, status_code=202)
+            except Exception as e:
+                log_error(str(e), request)
         raise HTTPException(status_code=500) from err
 
 
@@ -289,27 +364,29 @@ async def query_status(queryID: str, request: Request):
         400: {
             "content": {
                 "application/json": {
-                    "example": {"detail_example_1": "Cannot retrieve result preview (NOTE: Result preview is only available, if query status state is SUCCEEDED).",
-                                "detail_example_2": "Invalid queryID!"}
+                    "example": {"detail_example_1": "Cannot retrieve result preview (NOTE: Result preview is only available, if query execution status state = SUCCEEDED).",
+                                "detail_example_2": "Invalid queryID!",
+                                "detail_example_3": "Allowed range for maxResults is 1-1000!"}
                 }
             },
         },
         404: {
             "content": {
                 "application/json": {
-                    "example": {"detail": "QueryID does not exist / invalid queryID!"}
+                    "example": {"detail": "QueryID not found!"}
                 }
             },
         }
     }
 )
-async def query_result_preview(queryID: str, request: Request):
+async def query_result_preview(queryID: str, request: Request, maxResults: int = 26):
     queryID = queryID.strip()
-    if not queryID: raise HTTPException(status_code=400, detail="Invalid queryID!")
+    if not valid_query_id(queryID): raise HTTPException(status_code=400, detail="Invalid queryID!")
+    if maxResults>1000 or maxResults<1: raise HTTPException(status_code=400, detail="Allowed range for maxResults is 1-1000!")
     try:
         query_response = athena_client.get_query_results(
             QueryExecutionId=queryID,
-            MaxResults=26
+            MaxResults=maxResults
         )
         # remove unnecessary data from AWS response
         del query_response['ResultSet']['ResultSetMetadata']
@@ -317,9 +394,9 @@ async def query_result_preview(queryID: str, request: Request):
     except Exception as err:
         log_error(str(err), request)
         if "InvalidRequestException" in str(err):
-            raise HTTPException(status_code=400, detail="Cannot retrieve result preview (NOTE: Result preview is only available, if query status state is SUCCEEDED).") from err
+            raise HTTPException(status_code=400, detail="Cannot retrieve result preview (NOTE: Result preview is only available, if query execution status state = SUCCEEDED).") from err
         elif "was not found" in str(err):
-            raise HTTPException(status_code=404, detail="QueryID does not exist / invalid queryID!") from err
+            raise HTTPException(status_code=404, detail="QueryID not found!") from err
         raise HTTPException(status_code=500) from err
 
 
@@ -361,7 +438,7 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
         description="Comma seperated fields ex.: gene_id,gene_stable_id",
     ), condition: Optional[str] = Query(
         default=None,
-        description="Condition to filter the data on, similar to SQL WHERE clause ex.: gene_id=554 AND gene_stable_id='eNSG00000210049'",
+        description="Condition to filter the data on, similar to SQL WHERE clause ex.: gene_id=554 AND gene_stable_id='ENSG00000210049'",
     )
 ):
     data_type = data_type.strip()
@@ -372,7 +449,7 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
         else: cache_key = base64.b64encode(bytes(''.join(sorted(data_type + species + fields)) + species, 'utf-8'))
         if(r.exists(cache_key)):
             query_id = r.get(cache_key).decode('ascii')
-            log_cache(True, request, cache_key)
+            log_cache_hits(True, request, cache_key)
         else:
             filters = "AND " + condition if condition else ""
             query_id = athena_client.start_query_execution(
@@ -384,7 +461,9 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
                 },
             )["QueryExecutionId"]
             r.set(cache_key, query_id)
-            log_cache(False, request)
+            # automatically expire/delete redis cache keys after 44 days as the query ID in Athena history is retained for 45 days
+            r.expire(cache_key, 3801600)
+            log_cache_hits(False, request)
 
         # https://tools.ietf.org/id/draft-kelly-json-hal-01.html
         return JSONResponse(content={
@@ -392,7 +471,8 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
             '_links': {
                 'self': {'href': str(request.url.path)},
                 'status': {'href': app.url_path_for('query_status', queryID=query_id)},
-                'preview': {'href': app.url_path_for('query_result_preview', queryID=query_id)}
+                'preview': {'href': app.url_path_for('query_result_preview', queryID=query_id)},
+                'export': {'href': app.url_path_for('export_query_result', queryID=query_id), "supported_file_formats": SUPPORTED_FILE_FORMATS}
             }
         }, media_type="application/hal+json")
     except Exception as err:
