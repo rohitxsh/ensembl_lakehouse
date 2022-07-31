@@ -1,3 +1,4 @@
 log.txt
+log_celery.txt
 __pycache__/
 .aws/

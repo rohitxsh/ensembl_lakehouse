@@ -1,11 +1,9 @@
 from contextlib import suppress
-from enum import Enum
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pyathena import connect
-from redis import Redis
-from time import time, sleep
+from time import time
 from typing import Optional
 from uuid import uuid4
 import pandas as pd
@@ -13,34 +11,14 @@ import base64
 import boto3
 import json
 import logging
-import os
 import uvicorn
 
-
-class SupportedFileFormats(str, Enum):
-    csv = "csv"
-    tsv = "tsv"
-    xlsx = "xlsx"
-    json = "json"
-    xml = "xml"
-    feather = "feather"
-    parquet = "parquet"
-
-
-# constants
-AWS_DATA_CATALOG = "AwsDataCatalog"
-AWS_SCHEMA_DATABASE_NAME = "ensembl-parquet-meta-schema"
-AWS_S3_OUTPUT_DIR = "s3://ensembl-athena-results/"
-SUPPORTED_FILE_FORMATS = [elem.value for elem in SupportedFileFormats]
-PRESIGNED_URL_EXPIRATION_TIME = 3600
-
+from app.constants import *
+from app.redis_setup import *
+from app.tasks import file_format_converter, delete_key_from_cache
 
 logging.basicConfig(filename="log.txt", level=logging.DEBUG, format='%(asctime)s %(levelname)s %(module)s %(name)s %(message)s')
 logger = logging.getLogger(__name__)
-
-redis_host = os.getenv("REDIS_HOST", "localhost")
-redis_port = os.getenv("REDIS_PORT", 6379)
-r = Redis(host=redis_host, port=redis_port, db=0)
 
 app = FastAPI(debug=True)
 
@@ -94,32 +72,6 @@ def valid_query_id(queryID: str):
     # length of query id = 32 (md5 hash length) + 4 (hyphen)
     if ( len(queryID) != 36 ): return False
     return True
-
-
-# background tasks
-def file_format_converter(queryID: str, df_input: str, file_format: SupportedFileFormats, cache_key: str, id: str):
-    try:
-        logger.info(f"Background task id:{id} status:PROCESSING func:file_format_converter params:{{file_format:{file_format}}}")
-        r.set(cache_key, "PROCESSING")
-
-        df = pd.read_csv(df_input, low_memory=False)
-        s3_key = AWS_S3_OUTPUT_DIR + f"{queryID}.{file_format}"
-        if (file_format == "tsv"): df.to_csv(s3_key, sep="\t", index=False)
-        elif (file_format == "xlsx"): df.to_excel(s3_key, index=False)
-        elif (file_format == "json"): df.to_json(s3_key, index=False, orient="split")
-        elif (file_format == "xml"): df.to_xml(s3_key, index=False)
-        elif (file_format == "feather"): df.to_feather(s3_key)
-        elif (file_format == "parquet"): df.to_parquet(s3_key, index=False)
-
-        logger.info(f"Background task id:{id} status:DONE func:file_format_converter params:{{file_format:{file_format}}}")
-        r.set(cache_key, "DONE")
-    except Exception as err:
-        logger.info(f"Background task id:{id} status:FAILED func:file_format_converter params:{{file_format:{file_format}}} error_detail:{str(err)}")
-        r.set(cache_key, "FAILED")
-
-def delete_key_from_cache(cache_key, wait_time = 0):
-    sleep(wait_time)  # in seconds
-    r.delete(cache_key)
 
 
 @app.get("/",
@@ -341,7 +293,7 @@ async def query_status(queryID: str, request: Request):
         }
     }
 )
-async def export_query_result(queryID: str, request: Request, background_tasks: BackgroundTasks, file_format: SupportedFileFormats):
+async def export_query_result(queryID: str, request: Request, file_format: SupportedFileFormats):
     # validate queryID and query execution status state
     queryID = queryID.strip()
     if not valid_query_id(queryID): raise HTTPException(status_code=400, detail="Invalid queryID!")
@@ -366,14 +318,15 @@ async def export_query_result(queryID: str, request: Request, background_tasks: 
         if "An error occurred (404) when calling the HeadObject operation: Not Found" in str(err):
             try:
                 cache_key = f"{queryID}.{file_format}"
+                if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "QUEUED"): return {"status": "QUEUED"}
                 if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "PROCESSING"): return {"status": "PROCESSING"}
                 if(r.exists(cache_key) and r.get(cache_key).decode('ascii') == "FAILED"):
                     # delete key after one minute
-                    background_tasks.add_task(delete_key_from_cache, cache_key, 60)
+                    delete_key_from_cache.delay(cache_key, 60)
                     return {"status": "FAILED, you can try again after one minute interval!"}
                 # start a background process with csv result file as input
                 df_input = s3_client.generate_presigned_url('get_object', Params={'Bucket': 'ensembl-athena-results', 'Key': f'{queryID}.csv'}, ExpiresIn=PRESIGNED_URL_EXPIRATION_TIME)
-                background_tasks.add_task(file_format_converter, queryID, df_input, file_format, cache_key, request.state.id)
+                file_format_converter.delay(queryID, df_input, file_format, cache_key, request.state.id)
                 r.set(cache_key, "QUEUED")
                 return JSONResponse(content={"status": "ACCEPTED"}, status_code=202)
             except Exception as e:
