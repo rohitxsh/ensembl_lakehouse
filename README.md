@@ -16,9 +16,10 @@ Run the script via
 6. Start the app via `uvicorn app.main:app --reload`
 - `Dockerfile`:
 1. Update your AWS keys in `.aws/credentials` [`.aws` directory should be in same directory as the `Dockerfile`]
-2. Build the image from the dockerfile via `docker build --tag e-lakehouse .`
+2. Build the image from the dockerfile via `docker build -f Dockerfile.api --tag e-lakehouse .`
 3. Run the container via `docker run -d --name e-lakehouse -p 8000:8000 -e REDIS_HOST="<custom_redis_host>" -e REDIS_PORT=<custom_redis_port> e-lakehouse`
-4. Setup a celery worker on same / different machine
+4. Build an image for the celery worker on same / different machine: `docker build -f Dockerfile.celery --tag celery-wroker-0 .`
+5. Run the container via `docker run -d --name celery-wroker-0 -e REDIS_HOST="<custom_redis_host>" -e REDIS_PORT=<custom_redis_port> celery-wroker-0`
 
 Setup `nginx`:
 1. `sudo apt install nginx`
