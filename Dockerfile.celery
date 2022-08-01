@@ -6,4 +6,4 @@ COPY app /app
 
 RUN pip3 install -r requirements.txt
 
-CMD ["celery", "-A", "app.tasks", "worker", "--loglevel", "DEBUG", "--logfile", "log_celery.txt", "--concurrency", "2"]
+CMD ["celery", "-A", "app.tasks", "worker", "--loglevel", "DEBUG", "--logfile", "log_celery.txt"]
