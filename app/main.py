@@ -106,7 +106,7 @@ def root():
 async def read_available_date_types(request: Request):
     try:
         if(r.exists('data_types')):
-            query_response = json.loads(r.get('data_types').decode('ascii'))
+            data_types = json.loads(r.get('data_types').decode('ascii'))
             log_cache_hits(True, request, 'data_types')
         else:
             data_types = []

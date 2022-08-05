@@ -29,46 +29,47 @@
 				"method": "GET",
 				"header": [],
 				"url": {
-					"raw": "{{url}}/data",
+					"raw": "{{url}}/data_types",
 					"host": [
 						"{{url}}"
 					],
 					"path": [
-						"data"
+						"data_types"
 					]
 				}
 			},
 			"response": []
 		},
 		{
-			"name": "/{data_type}/columns",
+			"name": "/filters/{data_type}",
 			"request": {
 				"method": "GET",
 				"header": [],
 				"url": {
-					"raw": "{{url}}{data_type}/columns",
+					"raw": "{{url}}/filters/{{data_type}}",
 					"host": [
-						"{{url}}{data_type}"
+						"{{url}}"
 					],
 					"path": [
-						"columns"
+						"filters",
+						"{{data_type}}"
 					]
 				}
 			},
 			"response": [
 				{
-					"name": "/gene/columns",
+					"name": "/filters/gene",
 					"originalRequest": {
 						"method": "GET",
 						"header": [],
 						"url": {
-							"raw": "{{url}}/gene/columns",
+							"raw": "{{url}}/filters/{data_type}",
 							"host": [
 								"{{url}}"
 							],
 							"path": [
-								"gene",
-								"columns"
+								"filters",
+								"{data_type}"
 							]
 						}
 					},
@@ -78,7 +79,7 @@
 					"header": [
 						{
 							"key": "date",
-							"value": "Mon, 25 Jul 2022 21:52:25 GMT"
+							"value": "Fri, 05 Aug 2022 20:58:19 GMT"
 						},
 						{
 							"key": "server",
@@ -94,7 +95,7 @@
 						},
 						{
 							"key": "x-correlation-id",
-							"value": "86a4e911-a2b2-4b10-b0f0-60759d88bb73"
+							"value": "0961c8fd-f585-4d39-a492-fc7bd63f292e"
 						}
 					],
 					"cookie": [],
@@ -103,18 +104,18 @@
 			]
 		},
 		{
-			"name": "/query/{queryID}/status",
+			"name": "/query/{query_id}/status",
 			"request": {
 				"method": "GET",
 				"header": [],
 				"url": {
-					"raw": "{{url}}/query/{queryID}/status",
+					"raw": "{{url}}/query/{{query_id}}/status",
 					"host": [
 						"{{url}}"
 					],
 					"path": [
 						"query",
-						"{queryID}",
+						"{{query_id}}",
 						"status"
 					]
 				}
@@ -122,18 +123,18 @@
 			"response": []
 		},
 		{
-			"name": "/query/{queryID}/preview",
+			"name": "/query/{query_id}/preview",
 			"request": {
 				"method": "GET",
 				"header": [],
 				"url": {
-					"raw": "{{url}}/query/{queryID}/preview",
+					"raw": "{{url}}/query/{{query_id}}/preview",
 					"host": [
 						"{{url}}"
 					],
 					"path": [
 						"query",
-						"{queryID}",
+						"{{query_id}}",
 						"preview"
 					]
 				}
@@ -146,24 +147,24 @@
 				"method": "GET",
 				"header": [],
 				"url": {
-					"raw": "{{url}}/query/{data_type}/{species}",
+					"raw": "{{url}}/query/{{data_type}}/{{species}}",
 					"host": [
 						"{{url}}"
 					],
 					"path": [
 						"query",
-						"{data_type}",
-						"{species}"
+						"{{data_type}}",
+						"{{species}}"
 					],
 					"query": [
 						{
 							"key": "condition",
-							"value": null,
+							"value": "",
 							"disabled": true
 						},
 						{
 							"key": "fields",
-							"value": null,
+							"value": "",
 							"disabled": true
 						}
 					]
@@ -236,6 +237,31 @@
 					"body": null
 				}
 			]
+		},
+		{
+			"name": "/query/{query_id}/export?file_format=csv",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{url}}/query/{{query_id}}/export?file_format=tsv",
+					"host": [
+						"{{url}}"
+					],
+					"path": [
+						"query",
+						"{{query_id}}",
+						"export"
+					],
+					"query": [
+						{
+							"key": "file_format",
+							"value": "tsv"
+						}
+					]
+				}
+			},
+			"response": []
 		}
 	]
 }
