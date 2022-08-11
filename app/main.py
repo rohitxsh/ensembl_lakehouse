@@ -7,11 +7,7 @@ from time import time
 from typing import Optional
 from uuid import uuid4
 import pandas as pd
-import base64
-import boto3
-import json
-import logging
-import uvicorn
+import base64, boto3, json, logging, re, uvicorn
 
 from app.constants import *
 from app.redis_setup import *
@@ -74,8 +70,8 @@ def query_id_validator(query_id: str):
     return True
 
 def cache_key_generator(data_type: str, species: str, fields: str = "", condition: str = ""):
-    # lowercase all SQL keywords as it has no significance in identifying a unique request
-    condition = condition.replace("AND", "and").replace("BETWEEN", "between").replace("LIKE", "like").replace("IN", "in")
+    # convert the string to lowercase except the values
+    condition = re.sub(r"\b(?<!')(\w+)(?!')\b", lambda match: match.group(1).lower(), condition)
     # split the condition on white spaces to get a list of all conditions and keywords and sort it to identify if same conditions has been encountered before in a different positions in the query
     condition_list = condition.split()
     condition_list.sort()
