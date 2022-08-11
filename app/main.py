@@ -7,11 +7,7 @@ from time import time
 from typing import Optional
 from uuid import uuid4
 import pandas as pd
-import base64
-import boto3
-import json
-import logging
-import uvicorn
+import base64, boto3, json, logging, re, uvicorn
 
 from app.constants import *
 from app.redis_setup import *
@@ -65,7 +61,7 @@ def custom_openapi():
     return app.openapi_schema
 app.openapi = custom_openapi
 
-def valid_query_id(query_id: str):
+def query_id_validator(query_id: str):
     if not query_id: return False
     # AWS Athena query ID format is a md5 hash with 4 hyphen
     if ( query_id.count('-') != 4 ): return False
@@ -73,6 +69,15 @@ def valid_query_id(query_id: str):
     if ( len(query_id) != 36 ): return False
     return True
 
+def cache_key_generator(data_type: str, species: str, fields: str = "", condition: str = ""):
+    # convert the string to lowercase except the values
+    condition = re.sub(r"\b(?<!')(\w+)(?!')\b", lambda match: match.group(1).lower(), condition)
+    # split the condition on white spaces to get a list of all conditions and keywords and sort it to identify if same conditions has been encountered before in a different positions in the query
+    condition_list = condition.split()
+    condition_list.sort()
+    sorted_condition = ''.join(condition_list)
+    cache_key_string = data_type + species + fields + sorted_condition
+    return base64.b64encode(bytes(cache_key_string, 'utf-8'))
 
 @app.get("/",
          responses={
@@ -223,7 +228,7 @@ async def read_available_filters_per_data_type(data_type: str, request: Request)
 )
 async def query_status(query_id: str, request: Request):
     query_id = query_id.strip()
-    if not valid_query_id(query_id): raise HTTPException(status_code=400, detail="Invalid query id!")
+    if not query_id_validator(query_id): raise HTTPException(status_code=400, detail="Invalid query id!")
     try:
         # 'State': 'QUEUED'|'RUNNING'|'SUCCEEDED'|'FAILED'|'CANCELLED'
         query_response = athena_client.get_query_execution( QueryExecutionId = query_id )
@@ -281,7 +286,7 @@ async def query_status(query_id: str, request: Request):
 async def export_query_result(query_id: str, request: Request, file_format: SupportedFileFormats):
     # validate query_id and query execution status state
     query_id = query_id.strip()
-    if not valid_query_id(query_id): raise HTTPException(status_code=400, detail="Invalid query id!")
+    if not query_id_validator(query_id): raise HTTPException(status_code=400, detail="Invalid query id!")
     try:
         query_response = athena_client.get_query_execution( QueryExecutionId = query_id )
         if query_response['QueryExecution']['Status']['State'] != 'SUCCEEDED':
@@ -366,7 +371,7 @@ async def export_query_result(query_id: str, request: Request, file_format: Supp
 )
 async def query_result_preview(query_id: str, request: Request, maxResults: int = 26):
     query_id = query_id.strip()
-    if not valid_query_id(query_id): raise HTTPException(status_code=400, detail="Invalid query id!")
+    if not query_id_validator(query_id): raise HTTPException(status_code=400, detail="Invalid query id!")
     if maxResults>1000 or maxResults<1: raise HTTPException(status_code=400, detail="Allowed range for maxResults is 1-1000!")
     try:
         query_response = athena_client.get_query_results(
@@ -422,7 +427,7 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
         default="*",
         description="Comma seperated fields ex.: gene_id,gene_stable_id",
     ), condition: Optional[str] = Query(
-        default=None,
+        default="",
         description="Condition to filter the data on, similar to SQL WHERE clause ex.: gene_id=554 AND gene_stable_id='ENSG00000210049'",
     )
 ):
@@ -430,8 +435,7 @@ async def request_query(data_type: str, species: str, request: Request, fields: 
     species = species.strip()
     if ((not data_type) or (not species)): raise HTTPException(status_code=400, detail="Invalid data_type/species!")
     try:
-        if condition: cache_key = base64.b64encode(bytes(''.join(sorted(data_type + species + fields + condition.replace("AND", "and").replace("BETWEEN", "between").replace("LIKE", "like").replace("IN", "in"))), 'utf-8'))
-        else: cache_key = base64.b64encode(bytes(''.join(sorted(data_type + species + fields)) + species, 'utf-8'))
+        cache_key = cache_key_generator(data_type, species, fields, condition)
         if(r.exists(cache_key)):
             query_id = r.get(cache_key).decode('ascii')
             log_cache_hits(True, request, cache_key)
