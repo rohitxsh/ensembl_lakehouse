@@ -203,8 +203,8 @@ async def read_available_filters_per_data_type(data_type: str, request: Request)
                  "content": {
                      "application/json": {
                          "example": [
-                             "data_type_1",
-                             "data_type_2"
+                             "file_format_1",
+                             "file_format_2"
                          ]
                      }
                  },
