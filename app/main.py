@@ -197,6 +197,34 @@ async def read_available_filters_per_data_type(data_type: str, request: Request)
         raise HTTPException(status_code=500) from err
 
 
+@app.get("/result_file_formats",
+         responses={
+             200: {
+                 "content": {
+                     "application/json": {
+                         "example": [
+                             "data_type_1",
+                             "data_type_2"
+                         ]
+                     }
+                 },
+             }
+         }
+         )
+async def read_available_result_file_formats(request: Request):
+    try:
+        if(r.exists('result_file_formats')):
+            log_cache_hits(True, request, 'result_file_formats')
+            return json.loads(r.get('result_file_formats').decode('ascii'))
+        else:
+            r.set('result_file_formats', json.dumps(SUPPORTED_FILE_FORMATS))
+            log_cache_hits(False, request)
+            return SUPPORTED_FILE_FORMATS
+    except Exception as err:
+        log_error(str(err), request)
+        raise HTTPException(status_code=500) from err
+
+
 @app.get(
     "/query/{query_id}/status",
     responses={
