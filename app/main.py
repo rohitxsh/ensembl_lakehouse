@@ -1,5 +1,6 @@
 from contextlib import suppress
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from pyathena import connect
@@ -21,6 +22,11 @@ app = FastAPI(debug=True)
 athena_client = boto3.client('athena')
 s3_client = boto3.client('s3')
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_headers=["*"],
+)
 
 # log all requests
 @app.middleware("http")
