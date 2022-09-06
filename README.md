@@ -25,6 +25,7 @@ Setup `nginx`:
 1. `sudo apt install nginx`
 2. `sudo vi /etc/nginx/sites-enabled/api` (Refer to nginx.conf)
 3. `sudo service nginx restart`
+Please refer to https://www.digitalocean.com/community/tutorials/how-to-create-a-self-signed-ssl-certificate-for-nginx-in-ubuntu-18-04
 
 Dependency: `Redis`  
 Default value for env. vars.:  
