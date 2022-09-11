@@ -1,3 +1,5 @@
+**Project report: https://github.com/rohitxsh/ensembl_lakehouse_ui/blob/main/README.md**
+
 # Ensembl's data lakehouse backend | GSoC '22
 
 Recommended: Python 3.9.13
